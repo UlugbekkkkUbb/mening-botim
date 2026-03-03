@@ -1,6 +1,1 @@
-pyTelegramBotAPI
-python-dotenv
-requests
-schedule
-flask
-gunicorn
+pyTelegramBotAPI, flask
