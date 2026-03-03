@@ -1115,3 +1115,461 @@ def pay_balance(call):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("topup_card"))
 def topup_card(call):
+    user_id = call.from_user.id
+    # Ask for amount
+    bot.edit_message_text(
+        "<b>♻️ HISOB TO'LDIRISH</b>\n\n"
+        "💳 <b>Karta orqali to'lov</b>\n\n"
+        "Qancha summa to'ldirmoqchisiz?\n"
+        "Minimal: 5,000 so'm | Maksimal: 1,000,000 so'm\n\n"
+        "<i>Faqat raqam kiriting (masalan: 50000)</i>",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML"
+    )
+    bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_topup_amount)
+    bot.answer_callback_query(call.id)
+
+def process_topup_amount(message):
+    user_id = message.from_user.id
+    try:
+        amount = float(message.text.strip())
+        settings = get_admin_settings()
+        if amount < settings[3] or amount > settings[4]:
+            bot.send_message(user_id,
+                f"❌ <b>Noto'g'ri summa!</b>\n\n"
+                f"Minimal: {settings[3]:,.0f} so'm\n"
+                f"Maksimal: {settings[4]:,.0f} so'm\n\n"
+                f"Qaytadan urinib ko'ring yoki /start bosing.",
+                parse_mode="HTML")
+            return
+    except:
+        bot.send_message(user_id,
+            "<b>❌ Xato!</b> Iltimos, faqat son kiriting.\n"
+            "Qaytadan urinib ko'ring yoki /start bosing.",
+            parse_mode="HTML")
+        return
+
+    order_id = str(uuid.uuid4())[:12]
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("""INSERT INTO orders(order_id, user_id, product_type, product_id, amount, status, created_at)
+                 VALUES(?, ?, ?, ?, ?, ?, ?)""",
+              (order_id, user_id, 'topup', 'topup', amount, 'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
+    settings = get_admin_settings()
+    text = f"""
+<b>💳 KARTA ORQALI TO'LOV</b>
+
+<b>To'lov ma'lumotlari:</b>
+💰 Summa: <b>{amount:,.0f} so'm</b>
+🆔 Buyurtma: <code>{order_id}</code>
+
+<b>📍 KARTA DETALLARI:</b>
+💳 Karta raqami: <code>{settings[1]}</code>
+👤 Egasi: <b>{settings[2]}</b>
+
+<b>📝 QADAMLAR:</b>
+1️⃣ Yuqoridagi karta raqamiga pul o'tkazing
+2️⃣ Buyurtma raqamini eslatib qo'ying
+3️⃣ Quyidagi ✅ tugmasini bosing
+
+<b>⏰ VAQTI:</b> 
+To'lov 5-15 daqiqa ichida tasdiqlanadi
+
+<b>⚠️ MUHIM:</b>
+To'lovdan keyin <b>iltimos ✅ tugmasini bosing</b>
+Agar 15 daqiqada xabar bo'lmasa, yana bosing
+    """
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✅ To'lov amalga oshdi", callback_data=f"confirm_payment_{order_id}"))
+    markup.add(types.InlineKeyboardButton("❌ Bekor qilish", callback_data=f"cancel_order_{order_id}"))
+    bot.send_message(user_id, text, parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_payment_"))
+def confirm_payment(call):
+    user_id = call.from_user.id
+    order_id = call.data.replace("confirm_payment_", "")
+    
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("SELECT amount, product_type, status FROM orders WHERE order_id=? AND user_id=?", (order_id, user_id))
+    order = c.fetchone()
+    if not order:
+        bot.answer_callback_query(call.id, "❌ Buyurtma topilmadi!", show_alert=True)
+        conn.close()
+        return
+    amount, product_type, status = order
+    if status != 'pending':
+        bot.answer_callback_query(call.id, "❌ Bu buyurtma allaqachon tasdiqlangan yoki bekor qilingan.", show_alert=True)
+        conn.close()
+        return
+    
+    # Mark as pending for admin approval (we could auto-complete but better to have admin confirm)
+    # Here we just notify admin and tell user it's pending admin verification.
+    c.execute("UPDATE orders SET payment_method='card' WHERE order_id=?", (order_id,))
+    conn.commit()
+    conn.close()
+    
+    bot.edit_message_text(
+        f"✅ <b>To'lov qabul qilindi!</b>\n\n"
+        f"Buyurtma #{order_id}\n"
+        f"Summa: {amount:,.0f} so'm\n\n"
+        f"⏳ Endi administrator tomonidan tekshiriladi.\n"
+        f"Tasdiqlangandan so'ng balansingizga tushadi.",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML"
+    )
+    
+    # Notify admin
+    admin_notify = f"""
+🔔 <b>Yangi to'lov tasdiqlandi!</b>
+
+👤 Foydalanuvchi: {user_id}
+🆔 Buyurtma: {order_id}
+💰 Summa: {amount:,.0f} so'm
+💳 To'lov usuli: Karta
+
+Buyurtmani tekshirish va tasdiqlash:
+/admin_confirm {order_id}  (yoki admin panel orqali)
+    """
+    bot.send_message(ADMIN_ID, admin_notify, parse_mode="HTML")
+    bot.answer_callback_query(call.id, "✅ Adminga xabar yuborildi. Tez orada tasdiqlanadi.", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel_order_"))
+def cancel_order(call):
+    user_id = call.from_user.id
+    order_id = call.data.replace("cancel_order_", "")
+    
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("SELECT status FROM orders WHERE order_id=? AND user_id=?", (order_id, user_id))
+    order = c.fetchone()
+    if not order:
+        bot.answer_callback_query(call.id, "❌ Buyurtma topilmadi!", show_alert=True)
+        conn.close()
+        return
+    status = order[0]
+    if status != 'pending':
+        bot.answer_callback_query(call.id, "❌ Bu buyurtma allaqachon yakunlangan yoki bekor qilingan.", show_alert=True)
+        conn.close()
+        return
+    
+    c.execute("UPDATE orders SET status='cancelled' WHERE order_id=?", (order_id,))
+    conn.commit()
+    conn.close()
+    
+    bot.edit_message_text(
+        f"❌ <b>Buyurtma bekor qilindi</b>\n\n"
+        f"Buyurtma #{order_id}\n"
+        f"Bekor qilindi.",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML"
+    )
+    bot.answer_callback_query(call.id, "❌ Buyurtma bekor qilindi.", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_balance")
+def refresh_balance(call):
+    user_id = call.from_user.id
+    user = get_user_data(user_id)
+    if not user:
+        bot.answer_callback_query(call.id, "❌ Ma'lumot topilmadi!", show_alert=True)
+        return
+    
+    premium_status = "💎 Premium (Faol)" if user[6] else "📝 Oddiy"
+    text = f"""
+<b>💰 SIZNING BALANSINGIZ</b>
+
+<b>💵 So'm Balans:</b> {user[3]:,.0f} so'm
+<b>⭐ Stars:</b> {user[8]:,.0f} ta
+<b>👥 Referallar:</b> {user[5]} ta
+<b>📊 Jami Earned:</b> {user[9]:,.0f} so'm
+<b>👤 Referal Income:</b> {user[10]:,.0f} so'm
+
+<b>🔑 Hisobat Ma'lumotlari:</b>
+<b>🆔 User ID:</b> <code>{user_id}</code>
+<b>📅 Qo'shilgan sana:</b> {user[11]}
+<b>🌟 Status:</b> {premium_status}
+    """
+    try:
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML")
+    except:
+        bot.send_message(user_id, text, parse_mode="HTML")
+    bot.answer_callback_query(call.id, "✅ Yangilandi!")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("copy_ref_"))
+def copy_ref(call):
+    user_id = call.from_user.id
+    # The data is "copy_ref_{user_id}" but it's the same user clicking
+    bot.answer_callback_query(call.id, "🔗 Havola nusxalandi!", show_alert=True)
+    # Optionally send the link again
+    bot_name = bot.get_me().username
+    ref_link = f"https://t.me/{bot_name}?start={user_id}"
+    bot.send_message(user_id, f"<code>{ref_link}</code>", parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ref_history_"))
+def ref_history(call):
+    user_id = call.from_user.id
+    # The data is "ref_history_{user_id}" but it's the same user clicking
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("""SELECT referred_user_id, bonus_amount, created_at 
+                 FROM referral_history 
+                 WHERE referrer_id=? 
+                 ORDER BY created_at DESC LIMIT 20""", (user_id,))
+    history = c.fetchall()
+    conn.close()
+    
+    if not history:
+        bot.send_message(user_id, "📭 Hali referal tarixi mavjud emas.", parse_mode="HTML")
+    else:
+        text = "<b>📊 Referal Tarixi (oxirgi 20):</b>\n\n"
+        for i, (ref_user, bonus, date) in enumerate(history, 1):
+            text += f"{i}. 👤 {ref_user} | 💰 {bonus:,.0f} so'm | 📅 {date[:10]}\n"
+        bot.send_message(user_id, text, parse_mode="HTML")
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")
+def back_to_menu(call):
+    user_id = call.from_user.id
+    bot.edit_message_text(
+        "<b>🔙 Asosiy menyu</b>\n\nTugmalardan birini tanlang.",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard(user_id)
+    )
+    bot.answer_callback_query(call.id)
+
+# Admin settings callbacks
+@bot.callback_query_handler(func=lambda call: call.data == "setting_card")
+def setting_card(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Ruxsat yo'q", show_alert=True)
+        return
+    bot.edit_message_text(
+        "<b>💳 Karta raqamini o'zgartirish</b>\n\n"
+        "Yangi karta raqamini kiriting (faqat raqamlar):",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML"
+    )
+    bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_new_card)
+
+def process_new_card(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    new_card = message.text.strip()
+    if not new_card.isdigit():
+        bot.send_message(ADMIN_ID, "❌ Karta raqami faqat raqamlardan iborat bo'lishi kerak.", parse_mode="HTML")
+        return
+    update_admin_setting('card_number', new_card)
+    bot.send_message(ADMIN_ID, f"✅ Karta raqami yangilandi: <code>{new_card}</code>", parse_mode="HTML")
+    # Return to settings menu
+    admin_settings(message)  # call admin_settings function again to show updated settings
+
+@bot.callback_query_handler(func=lambda call: call.data == "setting_minmax")
+def setting_minmax(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Ruxsat yo'q", show_alert=True)
+        return
+    bot.edit_message_text(
+        "<b>🔢 Minimal va Maksimal to'lov miqdorini o'zgartirish</b>\n\n"
+        "Yangi minimal miqdorni kiriting (so'm):",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML"
+    )
+    bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_new_min)
+
+def process_new_min(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        new_min = float(message.text.strip())
+    except:
+        bot.send_message(ADMIN_ID, "❌ Noto'g'ri format. Iltimos, son kiriting.", parse_mode="HTML")
+        return
+    # Save temporarily, then ask for max
+    bot.send_message(ADMIN_ID, f"✅ Minimal miqdor {new_min:,.0f} so'm qilib belgilandi.\nEndi maksimal miqdorni kiriting:")
+    bot.register_next_step_handler_by_chat_id(message.chat.id, lambda msg: process_new_max(msg, new_min))
+
+def process_new_max(message, new_min):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        new_max = float(message.text.strip())
+    except:
+        bot.send_message(ADMIN_ID, "❌ Noto'g'ri format. Iltimos, son kiriting.", parse_mode="HTML")
+        return
+    if new_max <= new_min:
+        bot.send_message(ADMIN_ID, "❌ Maksimal miqdor minimaldan katta bo'lishi kerak.", parse_mode="HTML")
+        return
+    update_admin_setting('min_topup', new_min)
+    update_admin_setting('max_topup', new_max)
+    bot.send_message(ADMIN_ID, f"✅ Minimal va Maksimal yangilandi: {new_min:,.0f} - {new_max:,.0f} so'm", parse_mode="HTML")
+    admin_settings(message)
+
+@bot.callback_query_handler(func=lambda call: call.data == "setting_commission")
+def setting_commission(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Ruxsat yo'q", show_alert=True)
+        return
+    # Show current commissions and ask which to change
+    settings = get_admin_settings()
+    text = f"""
+<b>💰 KOMISSIYALAR</b>
+
+Joriy:
+- Referal bonus: {settings[5]:,.0f} so'm
+- Premium bonus: {settings[6]:,.0f} so'm
+- Stars bonus: {settings[7]:,.0f} so'm
+- Top-up komissiya: {settings[8]:.1f}%
+
+Qaysi birini o'zgartirmoqchisiz?
+1 - Referal bonus
+2 - Premium bonus
+3 - Stars bonus
+4 - Top-up komissiya (foiz)
+
+Raqamni kiriting (1-4):
+    """
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="HTML")
+    bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_commission_choice)
+
+def process_commission_choice(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    choice = message.text.strip()
+    if choice not in ['1','2','3','4']:
+        bot.send_message(ADMIN_ID, "❌ Noto'g'ri tanlov. 1-4 oralig'ida son kiriting.", parse_mode="HTML")
+        return
+    commission_map = {'1': 'ref_commission', '2': 'premium_commission', '3': 'stars_commission', '4': 'topup_commission'}
+    field = commission_map[choice]
+    prompt = {
+        '1': "Yangi referal bonus miqdorini kiriting (so'm):",
+        '2': "Yangi premium bonus miqdorini kiriting (so'm):",
+        '3': "Yangi stars bonus miqdorini kiriting (so'm):",
+        '4': "Yangi top-up komissiya foizini kiriting (masalan: 5):"
+    }[choice]
+    bot.send_message(ADMIN_ID, prompt, parse_mode="HTML")
+    bot.register_next_step_handler_by_chat_id(message.chat.id, lambda msg: process_new_commission(msg, field))
+
+def process_new_commission(message, field):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        value = float(message.text.strip())
+    except:
+        bot.send_message(ADMIN_ID, "❌ Noto'g'ri format. Iltimos, son kiriting.", parse_mode="HTML")
+        return
+    update_admin_setting(field, value)
+    bot.send_message(ADMIN_ID, f"✅ {field} yangilandi: {value}", parse_mode="HTML")
+    admin_settings(message)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_back")
+def admin_back_callback(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ Ruxsat yo'q", show_alert=True)
+        return
+    # Go back to admin panel main menu
+    admin_panel(call.message)  # call the admin panel function with the message object
+    bot.answer_callback_query(call.id)
+
+# Additional admin command to confirm topup manually
+@bot.message_handler(commands=['admin_confirm'])
+def admin_confirm(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        order_id = message.text.split()[1]
+    except:
+        bot.send_message(ADMIN_ID, "❌ Buyurtma ID sini kiriting: /admin_confirm ORDER_ID", parse_mode="HTML")
+        return
+    
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id, amount, status FROM orders WHERE order_id=?", (order_id,))
+    order = c.fetchone()
+    if not order:
+        bot.send_message(ADMIN_ID, "❌ Buyurtma topilmadi.", parse_mode="HTML")
+        conn.close()
+        return
+    user_id, amount, status = order
+    if status != 'pending':
+        bot.send_message(ADMIN_ID, f"❌ Buyurtma holati: {status}. Tasdiqlab bo'lmaydi.", parse_mode="HTML")
+        conn.close()
+        return
+    
+    # Mark order as completed
+    c.execute("UPDATE orders SET status='completed', completed_at=? WHERE order_id=?", 
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), order_id))
+    # Add to user balance (topup)
+    c.execute("UPDATE users SET balance=balance+?, last_active=? WHERE user_id=?", 
+              (amount, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
+    # Record transaction
+    transaction_id = str(uuid.uuid4())[:12]
+    c.execute("""INSERT INTO transactions(transaction_id, user_id, amount, type, description, created_at)
+                 VALUES(?, ?, ?, ?, ?, ?)""",
+              (transaction_id, user_id, amount, 'topup', f"Hisob to'ldirish (buyurtma {order_id})", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+    
+    bot.send_message(ADMIN_ID, f"✅ Buyurtma #{order_id} tasdiqlandi. Foydalanuvchi balansiga {amount:,.0f} so'm qo'shildi.", parse_mode="HTML")
+    # Notify user
+    bot.send_message(user_id, 
+        f"✅ <b>Hisobingiz to'ldirildi!</b>\n\n"
+        f"Buyurtma #{order_id}\n"
+        f"Summa: {amount:,.0f} so'm\n\n"
+        f"Balansingizga qo'shildi. Rahmat!",
+        parse_mode="HTML")
+
+# Admin command to ban/unban user (if needed)
+@bot.message_handler(commands=['ban'])
+def ban_user(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        user_id = int(message.text.split()[1])
+    except:
+        bot.send_message(ADMIN_ID, "❌ Foydalanuvchi ID sini kiriting: /ban USER_ID", parse_mode="HTML")
+        return
+    
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("UPDATE users SET is_banned=1 WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    bot.send_message(ADMIN_ID, f"✅ Foydalanuvchi {user_id} bloklandi.", parse_mode="HTML")
+
+@bot.message_handler(commands=['unban'])
+def unban_user(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        user_id = int(message.text.split()[1])
+    except:
+        bot.send_message(ADMIN_ID, "❌ Foydalanuvchi ID sini kiriting: /unban USER_ID", parse_mode="HTML")
+        return
+    
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("UPDATE users SET is_banned=0 WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    bot.send_message(ADMIN_ID, f"✅ Foydalanuvchi {user_id} blokdan chiqarildi.", parse_mode="HTML")
+
+# Start Flask server in a separate thread (optional, for keeping bot alive on some hosts)
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+threading.Thread(target=run_flask, daemon=True).start()
+
+# Start bot polling
+if __name__ == '__main__':
+    print("Bot ishga tushdi...")
+    bot.infinity_polling()
