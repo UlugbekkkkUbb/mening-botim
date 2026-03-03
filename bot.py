@@ -377,7 +377,16 @@ def run_flask(): app.run(host='0.0.0.0', port=8080)
 if __name__ == '__main__':
     threading.Thread(target=run_flask).start()
     while True:
-        try: bot.polling(none_stop=True)
+        try: import os
+
+if __name__ == "__main__":
+    # Render portni avtomatik taqdim etadi, biz shuni ishlatamiz
+    port = int(os.environ.get("PORT", 5000))
+    # Flask (veb-server)ni alohida oqimda ishga tushiramiz
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=port)).start()
+    # Botni cheksiz kutish (infinity_polling) rejimida ishga tushiramiz
+    bot.infinity_polling()
+
         except Exception as e:
             logging.error(e)
             time.sleep(5)
