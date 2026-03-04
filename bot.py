@@ -9,22 +9,21 @@ from functools import wraps
 from contextlib import closing
 
 from dotenv import load_dotenv
-from flask import Flask
+from flask import Flask, request, abort
 import telebot
 from telebot import types
 
-# ------------------- KONFIGURATSIYA (ENV orqali) -------------------
+# ------------------- KONFIGURATSIYA -------------------
 load_dotenv()
 
 class Config:
-    API_TOKEN = os.getenv('API_TOKEN', '8305687409:AAF4-xPc-lwMyJQHcvEFNKxn_nrpWVHBC80')
-    ADMIN_ID = int(os.getenv('ADMIN_ID', '7666979987'))
-    ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'IDD_ADMINN')
-    CARD_NUMBER = os.getenv('CARD_NUMBER', '9860080195351079')
-    CARD_HOLDER = os.getenv('CARD_HOLDER', 'Nargiza Karshiyeva')
-    BOT_USERNAME = os.getenv('BOT_USERNAME', 'PREMIUM_STARSS_1BOT')
+    API_TOKEN = os.getenv('8305687409:AAF4-xPc-lwMyJQHcvEFNKxn_nrpWVHBC80')
+    ADMIN_ID = int(os.getenv('7666979987', '0'))
+    ADMIN_USERNAME = os.getenv('@IDD_ADMINN', '')
+    CARD_NUMBER = os.getenv('9860 0801 9535 1079', '')
+    CARD_HOLDER = os.getenv('Nargiza Karshiyeva', '')
+    BOT_USERNAME = os.getenv('@PREMIUM_STARSS_1BOT', '')
     DATABASE = os.getenv('DATABASE', 'bot_data.db')
-
     MIN_TOPUP = 5000
     MAX_TOPUP = 1000000
     REF_BONUS = 500
@@ -200,6 +199,20 @@ db = Database(config.DATABASE)
 bot = telebot.TeleBot(config.API_TOKEN, parse_mode='HTML')
 app = Flask(__name__)
 
+# ------------------- ANTI-FLOOD (oddiy) -------------------
+user_last_message = {}
+def anti_flood(func):
+    @wraps(func)
+    def wrapper(message):
+        user_id = message.from_user.id
+        now = time.time()
+        if user_id in user_last_message and now - user_last_message[user_id] < 1.0:
+            bot.reply_to(message, "⏳ Sekinroq, iltimos!")
+            return
+        user_last_message[user_id] = now
+        return func(message)
+    return wrapper
+
 # ------------------- DEKORATORLAR -------------------
 def user_required(func):
     @wraps(func)
@@ -212,7 +225,7 @@ def user_required(func):
             db.create_user(user_id, username, first_name)
             user = db.get_user(user_id)
         if user[13]:  # is_banned
-            bot.reply_to(message_or_call, "❌ Siz bloklangansiz.")
+            bot.reply_to(message_or_call, "🚫 <b>Siz bloklangansiz!</b>")
             return
         return func(message_or_call)
     return wrapper
@@ -221,7 +234,7 @@ def admin_only(func):
     @wraps(func)
     def wrapper(message_or_call):
         if message_or_call.from_user.id != config.ADMIN_ID:
-            bot.reply_to(message_or_call, "❌ Siz admin emassiz!")
+            bot.reply_to(message_or_call, "⛔ <b>Siz admin emassiz!</b>")
             return
         return func(message_or_call)
     return wrapper
@@ -235,7 +248,7 @@ def subscription_required(func):
             channel = settings[10]
             if channel and not is_subscribed(user_id, channel):
                 markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton("💎 Obuna bo'lish", url=channel))
+                markup.add(types.InlineKeyboardButton("🔔 Obuna bo'lish", url=channel))
                 bot.reply_to(
                     message_or_call,
                     f"🔒 <b>MAJBURIY OBUNA</b>\n\nBotdan foydalanish uchun quyidagi kanalga obuna bo'ling:\n{channel}",
@@ -277,10 +290,19 @@ def payment_method_markup(order_id):
     markup.add(types.InlineKeyboardButton("❌ Bekor qilish", callback_data=f"cancel_order_{order_id}"))
     return markup
 
+def admin_check_markup(order_id):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"admin_approve_{order_id}"),
+        types.InlineKeyboardButton("❌ Rad etish", callback_data=f"admin_reject_{order_id}")
+    )
+    return markup
+
 # ------------------- HANDLERLAR -------------------
 @bot.message_handler(commands=['start'])
 @user_required
 @subscription_required
+@anti_flood
 def start(message):
     user_id = message.from_user.id
     args = message.text.split()
@@ -297,41 +319,41 @@ def start(message):
                     f"🎉 <b>Yangi referal qo'shildi!</b>\n\n✅ Bonus: +{bonus:,.0f} so'm"
                 )
     welcome = f"""
-<b>👋 Assalomu alaykum!</b>
+🌟✨ <b>Assalomu alaykum!</b> ✨🌟
 
 🤖 <b>Mening Botimga Xush Kelibsiz!</b>
 
-<b>Siz quyidagi xizmatlardan foydalanishingiz mumkin:</b>
+📌 <b>Siz quyidagi xizmatlardan foydalanishingiz mumkin:</b>
 
-💎 <b>Premium</b> - Telegram Premium sotib oling
-⭐ <b>Stars</b> - Telegram Stars olish
-💰 <b>Balans</b> - Balansingizni ko'rish
-👥 <b>Pul ishlash</b> - Referal orqali daromad
-♻️ <b>Hisob to'ldirish</b> - Balans qo'shish
-❓ <b>Yordam</b> - Savol-javoblar
+💎 <b>Premium</b> – Telegram Premium sotib oling
+⭐ <b>Stars</b> – Telegram Stars olish
+💰 <b>Balans</b> – Balansingizni ko'rish
+👥 <b>Pul ishlash</b> – Referal orqali daromad
+♻️ <b>Hisob to'ldirish</b> – Balans qo'shish
+❓ <b>Yordam</b> – Savol-javoblar
 
-<i>Tugmalardan birini tanlang va boshlang!</i>
+👇 Tugmalardan birini tanlang va boshlang!
     """
     bot.send_message(user_id, welcome, reply_markup=get_main_keyboard(user_id))
 
 @bot.message_handler(func=lambda m: m.text == "💎 Premium")
 @user_required
 @subscription_required
+@anti_flood
 def premium_menu(message):
     user_id = message.from_user.id
     user = db.get_user(user_id)
     if user[6]:
         bot.send_message(
             user_id,
-            f"✅ Siz allaqachon Premium foydalanuvchisiz!\n"
-            f"📅 Amal qilish muddati: {user[7] or 'Cheksiz'}"
+            f"✅ <b>Siz allaqachon Premium foydalanuvchisiz!</b>\n📅 Amal qilish muddati: {user[7] or 'Cheksiz'}"
         )
         return
-    text = "<b>💎 PREMIUM PAKETLAR</b>\n\nPaketni tanlang:"
+    text = "💎 <b>PREMIUM PAKETLAR</b>\n\nQuyidagi paketlardan birini tanlang:"
     markup = types.InlineKeyboardMarkup()
     for key, pkg in config.PREMIUM_PRICES.items():
         markup.add(types.InlineKeyboardButton(
-            f"{pkg['display']} - {pkg['price']:,} so'm",
+            f"💎 {pkg['display']} – {pkg['price']:,} so'm",
             callback_data=f"buy_premium_{key}"
         ))
     markup.add(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main"))
@@ -340,14 +362,15 @@ def premium_menu(message):
 @bot.message_handler(func=lambda m: m.text == "🌟 Stars")
 @user_required
 @subscription_required
+@anti_flood
 def stars_menu(message):
     user_id = message.from_user.id
     user = db.get_user(user_id)
-    text = f"<b>⭐ STARS PAKETLARI</b>\n\nSizning stars: {user[8]:,.0f} ⭐\n\nPaketni tanlang:"
+    text = f"⭐ <b>STARS PAKETLARI</b>\n\nSizning stars: {user[8]:,.0f} ⭐\n\nPaketni tanlang:"
     markup = types.InlineKeyboardMarkup()
     for key, pkg in config.STARS_PRICES.items():
         markup.add(types.InlineKeyboardButton(
-            f"{pkg['display']} - {pkg['price']:,} so'm",
+            f"⭐ {pkg['display']} – {pkg['price']:,} so'm",
             callback_data=f"buy_stars_{key}"
         ))
     markup.add(types.InlineKeyboardButton("🔙 Orqaga", callback_data="back_to_main"))
@@ -356,25 +379,27 @@ def stars_menu(message):
 @bot.message_handler(func=lambda m: m.text == "📦 Paketlar")
 @user_required
 @subscription_required
+@anti_flood
 def packages(message):
-    text = "<b>📦 BARCHA PAKETLAR</b>\n\n"
-    text += "<b>💎 Premium:</b>\n"
+    text = "📦 <b>BARCHA PAKETLAR</b>\n\n"
+    text += "💎 <b>Premium:</b>\n"
     for pkg in config.PREMIUM_PRICES.values():
-        text += f"  • {pkg['display']} - {pkg['price']:,} so'm\n"
-    text += "\n<b>⭐ Stars:</b>\n"
+        text += f"  • {pkg['display']} – {pkg['price']:,} so'm\n"
+    text += "\n⭐ <b>Stars:</b>\n"
     for pkg in config.STARS_PRICES.values():
-        text += f"  • {pkg['display']} - {pkg['price']:,} so'm\n"
+        text += f"  • {pkg['display']} – {pkg['price']:,} so'm\n"
     bot.send_message(message.from_user.id, text)
 
 @bot.message_handler(func=lambda m: m.text == "💰 Balans")
 @user_required
 @subscription_required
+@anti_flood
 def balance(message):
     user_id = message.from_user.id
     user = db.get_user(user_id)
     premium_status = "💎 Premium (Faol)" if user[6] else "📝 Oddiy"
     text = f"""
-<b>💰 SIZNING BALANSINGIZ</b>
+💰 <b>SIZNING BALANSINGIZ</b> 💰
 
 💵 So'm: {user[3]:,.0f} so'm
 ⭐ Stars: {user[8]:,.0f}
@@ -393,6 +418,7 @@ def balance(message):
 @bot.message_handler(func=lambda m: m.text == "👥 Pul ishlash")
 @user_required
 @subscription_required
+@anti_flood
 def earn(message):
     user_id = message.from_user.id
     user = db.get_user(user_id)
@@ -400,7 +426,7 @@ def earn(message):
     bot_username = bot.get_me().username
     ref_link = f"https://t.me/{bot_username}?start={user_id}"
     text = f"""
-<b>👥 PUL ISHLASH</b>
+👥 <b>PUL ISHLASH</b> 👥
 
 🔗 <b>Referal havolangiz:</b>
 <code>{ref_link}</code>
@@ -421,17 +447,18 @@ def earn(message):
 
 @bot.message_handler(func=lambda m: m.text == "❓ Yordam")
 @user_required
+@anti_flood
 def help(message):
     settings = db.get_admin_settings()
     text = f"""
-<b>❓ YORDAM</b>
+❓ <b>YORDAM</b> ❓
 
 <b>Xizmatlar:</b>
-💎 Premium - Telegram Premium
-⭐ Stars - Telegram Stars
-💰 Balans - hisobingiz
-👥 Pul ishlash - referal tizimi
-♻️ Hisob to'ldirish - balans qo'shish
+💎 Premium – Telegram Premium
+⭐ Stars – Telegram Stars
+💰 Balans – hisobingiz
+👥 Pul ishlash – referal tizimi
+♻️ Hisob to'ldirish – balans qo'shish
 
 <b>To'lov usullari:</b>
 💳 Karta (UzCard/Humo)
@@ -445,8 +472,9 @@ def help(message):
 @bot.message_handler(func=lambda m: m.text == "♻️ Hisob to'ldirish")
 @user_required
 @subscription_required
+@anti_flood
 def topup(message):
-    text = "<b>♻️ HISOB TO'LDIRISH</b>\n\nTo'lov usulini tanlang:"
+    text = "♻️ <b>HISOB TO'LDIRISH</b>\n\nTo'lov usulini tanlang:"
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("💳 Karta orqali", callback_data="topup_card"))
     bot.send_message(message.from_user.id, text, reply_markup=markup)
@@ -454,13 +482,14 @@ def topup(message):
 # ------------------- ADMIN PANEL -------------------
 @bot.message_handler(func=lambda m: m.text == "⚙️ Admin Panel")
 @admin_only
+@anti_flood
 def admin_panel(message):
     total_users = db.execute("SELECT COUNT(*) FROM users", fetchone=True)[0]
     completed_orders = db.execute("SELECT COUNT(*) FROM orders WHERE status='completed'", fetchone=True)[0]
     total_revenue = db.execute("SELECT SUM(amount) FROM orders WHERE status='completed'", fetchone=True)[0] or 0
     pending = db.execute("SELECT COUNT(*) FROM orders WHERE status IN ('pending', 'pending_check', 'pending_admin')", fetchone=True)[0]
     text = f"""
-<b>⚙️ ADMIN PANEL</b>
+⚙️ <b>ADMIN PANEL</b> ⚙️
 
 📊 Statistika:
 👥 Foydalanuvchilar: {total_users}
@@ -492,7 +521,7 @@ def admin_stats(message):
         """, fetchone=True)
     (total_users, with_ref, completed, pending, total_rev, premium_rev, stars_rev, topup_rev, referral_paid) = stats
     text = f"""
-<b>📊 BATAFSIL STATISTIKA</b>
+📊 <b>BATAFSIL STATISTIKA</b> 📊
 
 👥 Foydalanuvchilar: {total_users}
    Referallar bilan: {with_ref}
@@ -514,7 +543,7 @@ def admin_stats(message):
 def admin_settings(message):
     settings = db.get_admin_settings()
     text = f"""
-<b>⚙️ SOZLAMALAR</b>
+⚙️ <b>SOZLAMALAR</b> ⚙️
 
 💳 Karta: <code>{settings[1]}</code>
 👤 Egasi: {settings[2]}
@@ -541,7 +570,7 @@ def admin_settings(message):
 def broadcast(message):
     msg = bot.send_message(
         config.ADMIN_ID,
-        "<b>📧 XABAR YUBORISH</b>\n\nXabar matnini kiriting (HTML):"
+        "📧 <b>XABAR YUBORISH</b>\n\nXabar matnini kiriting (HTML formatida):"
     )
     bot.register_next_step_handler(msg, process_broadcast)
 
@@ -570,7 +599,7 @@ def users_list(message):
         "SELECT user_id, username, first_name, balance, is_premium, referrals FROM users ORDER BY join_date DESC LIMIT 30",
         fetchall=True
     )
-    text = "<b>👥 SO'NGI 30 FOYDALANUVCHI</b>\n\n"
+    text = "👥 <b>SO'NGI 30 FOYDALANUVCHI</b>\n\n"
     for i, (uid, uname, fname, bal, prem, refs) in enumerate(users, 1):
         prem_icon = "💎" if prem else "📝"
         uname = f"@{uname}" if uname else "no username"
@@ -594,7 +623,7 @@ def revenue(message):
     )[0] or 0
     total_rev = db.execute("SELECT SUM(amount) FROM orders WHERE status='completed'", fetchone=True)[0] or 0
     text = f"""
-<b>📈 DAROMAD</b>
+📈 <b>DAROMAD</b> 📈
 
 📅 Bugun: {today_rev:,.0f} so'm
 📅 Bu hafta: {week_rev:,.0f} so'm
@@ -610,7 +639,7 @@ def orders(message):
         "SELECT order_id, user_id, product_type, amount, status, created_at FROM orders ORDER BY created_at DESC LIMIT 20",
         fetchall=True
     )
-    text = "<b>📋 OXIRGI 20 BUYURTMA</b>\n\n"
+    text = "📋 <b>OXIRGI 20 BUYURTMA</b>\n\n"
     for order in orders:
         status_emoji = "✅" if order[4] == "completed" else "⏳" if order[4] in ["pending", "pending_check", "pending_admin"] else "❌"
         text += f"{status_emoji} #{order[0]}\n   👤 {order[1]} | 📦 {order[2].upper()} | 💰 {order[3]:,.0f} so'm | 📅 {order[5][:16]}\n"
@@ -622,7 +651,7 @@ def required_subscription_menu(message):
     settings = db.get_admin_settings()
     status = "✅ YOQILGAN" if settings[9] else "❌ O'CHIQ"
     text = f"""
-<b>🔐 MAJBURIY OBUNA</b>
+🔐 <b>MAJBURIY OBUNA</b> 🔐
 
 Holat: {status}
 Kanal: {settings[10] or 'Belgilanmagan'}
@@ -689,7 +718,7 @@ def sub_status(message):
     status = "✅ YOQILGAN" if settings[9] else "❌ O'CHIQ"
     bot.reply_to(
         message,
-        f"<b>🔐 Majburiy obuna</b>\n\nStatus: {status}\nKanal: {settings[10] or 'Belgilanmagan'}\nNarx: {settings[11]:,.0f} so'm"
+        f"🔐 <b>Majburiy obuna</b>\n\nStatus: {status}\nKanal: {settings[10] or 'Belgilanmagan'}\nNarx: {settings[11]:,.0f} so'm"
     )
 
 @bot.message_handler(commands=['ban'])
@@ -735,13 +764,13 @@ def callback_handler(call):
                  datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             )
             text = f"""
-<b>💎 PREMIUM SOTIB OLISH</b>
+💎 <b>PREMIUM SOTIB OLISH</b> 💎
 
-Paket: {pkg['display']}
-Narx: {pkg['price']:,} so'm
-Buyurtma ID: <code>{order_id}</code>
+📦 Paket: {pkg['display']}
+💰 Narx: {pkg['price']:,} so'm
+🆔 Buyurtma ID: <code>{order_id}</code>
 
-To'lov usulini tanlang:
+👇 To'lov usulini tanlang:
             """
             markup = payment_method_markup(order_id)
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -763,14 +792,14 @@ To'lov usulini tanlang:
                  datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             )
             text = f"""
-<b>⭐ STARS SOTIB OLISH</b>
+⭐ <b>STARS SOTIB OLISH</b> ⭐
 
-Paket: {pkg['display']}
-Narx: {pkg['price']:,} so'm
-Stars: {pkg['count']} ⭐
-Buyurtma ID: <code>{order_id}</code>
+📦 Paket: {pkg['display']}
+💰 Narx: {pkg['price']:,} so'm
+⭐ Stars: {pkg['count']} ta
+🆔 Buyurtma ID: <code>{order_id}</code>
 
-To'lov usulini tanlang:
+👇 To'lov usulini tanlang:
             """
             markup = payment_method_markup(order_id)
             bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
@@ -789,15 +818,21 @@ To'lov usulini tanlang:
             amount, product_type = order
             settings = db.get_admin_settings()
             text = f"""
-<b>💳 KARTA ORQALI TO'LOV</b>
+💳 <b>KARTA ORQALI TO'LOV</b> 💳
 
-Summa: {amount:,.0f} so'm
-Buyurtma: <code>{order_id}</code>
+💰 Summa: {amount:,.0f} so'm
+🆔 Buyurtma: <code>{order_id}</code>
 
-💳 Karta: <code>{settings[1]}</code>
+📍 <b>KARTA MA'LUMOTLARI:</b>
+💳 Raqam: <code>{settings[1]}</code>
 👤 Egasi: {settings[2]}
 
-To'lovni amalga oshirgach, quyidagi tugmani bosing.
+📝 <b>QADAMLAR:</b>
+1️⃣ Yuqoridagi kartaga pul o'tkazing
+2️⃣ Quyidagi "✅ To'lov qildim" tugmasini bosing
+3️⃣ Chekni yuboring
+
+⚠️ To'lovdan so'ng albatta tugmani bosing!
             """
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("✅ To'lov qildim", callback_data=f"confirm_payment_{order_id}"))
@@ -857,7 +892,7 @@ To'lovni amalga oshirgach, quyidagi tugmani bosing.
                 return
             db.execute("UPDATE orders SET status='pending_check', payment_method='card' WHERE order_id=?", (order_id,))
             bot.edit_message_text(
-                f"✅ To'lov qabul qilindi.\n\nEndi to'lov chekini (skrinshot yoki chek raqamini) yuboring.",
+                f"✅ To'lov qabul qilindi.\n\n📸 Endi to'lov chekini (skrinshot yoki chek raqamini) yuboring.",
                 call.message.chat.id, call.message.message_id
             )
             bot.send_message(user_id, "📸 Iltimos, to'lov chekini yuboring (rasm yoki matn).")
@@ -875,7 +910,7 @@ To'lovni amalga oshirgach, quyidagi tugmani bosing.
         elif data == "topup_card":
             msg = bot.send_message(
                 user_id,
-                "<b>♻️ HISOB TO'LDIRISH</b>\n\nSummani kiriting (so'm):\nMin: 5,000 | Max: 1,000,000"
+                "♻️ <b>HISOB TO'LDIRISH</b>\n\n💵 Summani kiriting (so'm):\nMin: 5,000 | Max: 1,000,000"
             )
             bot.register_next_step_handler(msg, process_topup_amount)
             bot.answer_callback_query(call.id)
@@ -888,7 +923,7 @@ To'lovni amalga oshirgach, quyidagi tugmani bosing.
                 return
             prem = "💎 Premium (Faol)" if user[6] else "📝 Oddiy"
             text = f"""
-<b>💰 BALANS</b>
+💰 <b>BALANS</b> 💰
 
 💵 So'm: {user[3]:,.0f} so'm
 ⭐ Stars: {user[8]:,.0f}
@@ -922,7 +957,7 @@ To'lovni amalga oshirgach, quyidagi tugmani bosing.
             if not history:
                 bot.send_message(user_id, "📭 Hali referal tarixi yo'q.")
             else:
-                text = "<b>📊 Referal tarixi:</b>\n\n"
+                text = "📊 <b>Referal tarixi:</b>\n\n"
                 for ref_id, bonus, date in history:
                     text += f"👤 {ref_id} | 💰 {bonus:,.0f} so'm | 📅 {date[:10]}\n"
                 bot.send_message(user_id, text)
@@ -951,7 +986,7 @@ To'lovni amalga oshirgach, quyidagi tugmani bosing.
                 return
             settings = db.get_admin_settings()
             text = f"""
-<b>💰 KOMISSIYALAR</b>
+💰 <b>KOMISSIYALAR</b> 💰
 
 1. Referal bonus: {settings[5]:,.0f}
 2. Premium bonus: {settings[6]:,.0f}
@@ -1034,7 +1069,7 @@ Qaysi birini o'zgartirasiz? (1-4)
         # Asosiy menyuga qaytish
         elif data == "back_to_main":
             bot.edit_message_text(
-                "<b>🔙 Asosiy menyu</b>",
+                "🔙 <b>Asosiy menyu</b>",
                 call.message.chat.id, call.message.message_id,
                 reply_markup=get_main_keyboard(user_id)
             )
@@ -1058,11 +1093,7 @@ def process_check(message, order_id):
         return
     db.execute("UPDATE orders SET status='pending_admin' WHERE order_id=?", (order_id,))
     caption = f"🔔 <b>Yangi to'lov cheki</b>\n\n👤 User: {user_id}\n🆔 Buyurtma: {order_id}"
-    markup = types.InlineKeyboardMarkup()
-    markup.add(
-        types.InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"admin_approve_{order_id}"),
-        types.InlineKeyboardButton("❌ Rad etish", callback_data=f"admin_reject_{order_id}")
-    )
+    markup = admin_check_markup(order_id)
     if message.photo:
         file_id = message.photo[-1].file_id
         bot.send_photo(config.ADMIN_ID, file_id, caption=caption, reply_markup=markup)
@@ -1097,15 +1128,21 @@ def process_topup_amount(message):
          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     )
     text = f"""
-<b>💳 KARTA ORQALI TO'LOV</b>
+💳 <b>KARTA ORQALI TO'LOV</b> 💳
 
-Summa: {amount:,.0f} so'm
-Buyurtma: <code>{order_id}</code>
+💰 Summa: {amount:,.0f} so'm
+🆔 Buyurtma: <code>{order_id}</code>
 
-💳 Karta: <code>{settings[1]}</code>
+📍 <b>KARTA MA'LUMOTLARI:</b>
+💳 Raqam: <code>{settings[1]}</code>
 👤 Egasi: {settings[2]}
 
-To'lovni amalga oshirgach, quyidagi tugmani bosing.
+📝 <b>QADAMLAR:</b>
+1️⃣ Yuqoridagi kartaga pul o'tkazing
+2️⃣ Quyidagi "✅ To'lov qildim" tugmasini bosing
+3️⃣ Chekni yuboring
+
+⚠️ To'lovdan so'ng albatta tugmani bosing!
     """
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("✅ To'lov qildim", callback_data=f"confirm_payment_{order_id}"))
@@ -1177,7 +1214,7 @@ def process_new_commission(message, choice):
     db.update_admin_setting(field_map[choice], value)
     bot.send_message(config.ADMIN_ID, f"✅ Yangilandi: {value}")
 
-# ------------------- FLASK SERVER -------------------
+# ------------------- FLASK WEBHOOK ENDPOINTS -------------------
 @app.route('/')
 def home():
     return "Bot ishlayapti ✅", 200
@@ -1186,17 +1223,35 @@ def home():
 def health():
     return "OK", 200
 
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    else:
+        abort(403)
 
 # ------------------- BOTNI ISHGA TUSHIRISH -------------------
 if __name__ == '__main__':
-    logger.info("Bot ishga tushdi...")
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    logger.info("Bot ishga tushmoqda...")
+
+    # Flask’ni alohida threadda ishga tushirish (webhook uchun)
+    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False), daemon=True)
     flask_thread.start()
-    while True:
-        try:
-            bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
-        except Exception as e:
-            logger.error(f"Polling error: {e}")
-            time.sleep(5)
+
+    # Render’da bo‘lsak webhook o‘rnatamiz, aks holda polling ishlatamiz
+    render_url = os.getenv('RENDER_EXTERNAL_URL')
+    if render_url:
+        webhook_url = f"{render_url}/webhook"
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook o'rnatildi: {webhook_url}")
+        # Asosiy threadni ushlab turish
+        while True:
+            time.sleep(60)
+    else:
+        logger.info("Render muhiti topilmadi, polling ishga tushirilmoqda...")
+        bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
